@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>Ink Arms · 横屏原型（多武器 + 弹匣装弹 + 拖拽开火）</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b1220;color:#e6edf3;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;touch-action:none;overscroll-behavior:none}
+  #canvas{display:block;width:100vw;height:100vh}
+  #hud{position:fixed;left:0;top:0;right:0;display:flex;justify-content:space-between;gap:8px;padding:8px 10px;pointer-events:none}
+  .pill{padding:6px 10px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);border-radius:999px;font-weight:700;font-size:12px}
+  /* 右侧拖拽面板：普攻/Q */
+  #rightPad{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:14px;align-items:flex-end;pointer-events:none}
+  .dragPad{position:relative;width:116px;height:116px;border-radius:50%;border:1px solid rgba(255,255,255,.28);background:#101826;box-shadow:0 8px 18px rgba(0,0,0,.35);pointer-events:auto}
+  .dragPad .label{position:absolute;left:50%;top:-10px;transform:translate(-50%,-100%);font-weight:800;font-size:12px;opacity:.85}
+  .stick{position:absolute;left:50%;top:50%;width:62px;height:62px;border-radius:50%;border:1px solid rgba(255,255,255,.25);background:#172233;transform:translate(-50%,-50%)}
+  .cd{position:absolute;inset:0;border-radius:50%;display:grid;place-items:center;background:rgba(0,0,0,.45);font-weight:900}
+  /* 竖屏提示 */
+  @media (orientation:portrait){ #rotateTip{display:flex} }
+  #rotateTip{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);z-index:10}
+  #rotateTip .card{padding:16px 20px;border-radius:14px;background:#0f1626;border:1px solid rgba(255,255,255,.15);color:#e6edf3;font-weight:700}
+  /* 顶部右侧：武器与商店 */
+  #topRight{position:fixed;right:12px;top:10px;display:flex;gap:8px;pointer-events:auto}
+  .btn{padding:8px 12px;border-radius:10px;border:1px solid rgba(255,255,255,.25);background:#101826;color:#e6edf3;cursor:pointer;font-weight:800}
+  .btn:active{transform:translateY(1px)}
+  .tab{padding:6px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.2);background:#0f1626;font-size:12px}
+  .tab.active{background:#1a2a44;border-color:#73b3ff}
+  /* 商店弹窗 */
+  #shop{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);backdrop-filter:blur(3px);z-index:20}
+  #shop .card{width:min(92vw,560px);border-radius:16px;background:#0f1626;border:1px solid rgba(255,255,255,.12);box-shadow:0 10px 30px rgba(0,0,0,.45);padding:14px}
+  #shop h2{margin:6px 0 10px 0;font-size:16px}
+  #shop .row{display:flex;gap:8px;flex-wrap:wrap}
+  #shop .item{flex:1 1 160px;padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,.16);background:#101b2d}
+  #shop .item h3{margin:0 0 6px 0;font-size:14px}
+  #shop .item p{margin:0 0 8px 0;font-size:12px;color:#cdd5df}
+  #toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);padding:8px 12px;border-radius:999px;background:rgba(15,24,38,.9);border:1px solid rgba(255,255,255,.15);font-size:12px;opacity:0;transition:opacity .3s}
+</style>
+</head>
+<body>
+<div id="rotateTip"><div class="card">请将手机横屏游玩（横向握持）</div></div>
+<canvas id="canvas"></canvas>
+<div id="hud">
+  <div class="pill" id="hudL">HP 100/100</div>
+  <div class="pill" id="hudC">左半屏移动 · 右下拖拽瞄准后松手释放（普攻/Q） · 武器有弹匣（3-4发）需装弹</div>
+  <div class="pill" id="hudR">FPS —</div>
+</div>
+<div id="topRight">
+  <button class="tab" id="wShooter">Shooter</button>
+  <button class="tab" id="wRoller">Roller</button>
+  <button class="tab" id="wCharger">Charger</button>
+  <button class="btn" id="btnShop">商店</button>
+</div>
+<div id="leftPad" style="position:fixed;left:16px;bottom:16px;pointer-events:none;z-index:5">
+  <div class="dragPad" id="padMove" style="pointer-events:auto">
+    <div class="label">移动</div>
+    <div class="stick"></div>
+  </div>
+</div>
+<div id="rightPad">
+  <div class="dragPad" id="padAtk">
+    <div class="label">普攻</div>
+    <div class="stick"></div>
+    <div class="cd" id="cdAtk" style="display:none"></div>
+  </div>
+  <div class="dragPad" id="padQ">
+    <div class="label">Q 技能</div>
+    <div class="stick"></div>
+    <div class="cd" id="cdQ" style="display:none"></div>
+  </div>
+</div>
+
+<!-- 商店 -->
+<div id="shop">
+  <div class="card">
+    <h2>弹药商店 · 余额 <span id="gold">0</span>G</h2>
+    <div class="row">
+      <div class="item"><h3>Shooter 弹药 ×100</h3><p>快射</p><button class="btn" data-buy="shooter,100,60">购买 60G</button></div>
+      <div class="item"><h3>Roller 墨桶 ×60</h3><p>近战涂抹</p><button class="btn" data-buy="roller,60,70">购买 70G</button></div>
+      <div class="item"><h3>Charger 电能 ×20</h3><p>狙击</p><button class="btn" data-buy="charger,20,80">购买 80G</button></div>
+    </div>
+    <div style="margin-top:10px;display:flex;justify-content:flex-end"><button class="btn" id="closeShop">关闭</button></div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+(()=>{
+  // ===== 基础 =====
+  const cvs = document.getElementById('canvas');
+  const ctx = cvs.getContext('2d');
+  const DPR = Math.max(1, Math.min(2, window.devicePixelRatio||1));
+  let W=0,H=0; function resize(){ W=cvs.width=Math.floor(innerWidth*DPR); H=cvs.height=Math.floor(innerHeight*DPR); cvs.style.width=innerWidth+'px'; cvs.style.height=innerHeight+'px'; }
+  addEventListener('resize',resize);
+
+  // ===== UI =====
+  const hudL=document.getElementById('hudL');
+  const hudR=document.getElementById('hudR');
+  const rotateTip=document.getElementById('rotateTip');
+  const toastEl=document.getElementById('toast');
+  const shopEl=document.getElementById('shop');
+  const goldEl=document.getElementById('gold');
+  const btnShop=document.getElementById('btnShop');
+  const closeShop=document.getElementById('closeShop');
+
+  const wShooter=document.getElementById('wShooter');
+  const wRoller=document.getElementById('wRoller');
+  const wCharger=document.getElementById('wCharger');
+
+  function toast(t){ toastEl.textContent=t; toastEl.style.opacity=1; clearTimeout(toast.t); toast.t=setTimeout(()=>toastEl.style.opacity=0,1200); }
+
+  // ===== 世界与角色 =====
+  const world={w:3600,h:2000};
+  const camera={x:0,y:0};
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  const len=(x,y)=>Math.hypot(x,y);
+  const norm=(x,y)=>{const L=len(x,y)||1; return {x:x/L,y:y/L}};
+
+  let gold = Number(localStorage.getItem('ink_gold')||100);
+  const ammo = {
+    shooter: Number(localStorage.getItem('ink_ammo_shooter')||120),
+    roller:  Number(localStorage.getItem('ink_ammo_roller')||60),
+    charger: Number(localStorage.getItem('ink_ammo_charger')||20),
+  };
+  function save(){ localStorage.setItem('ink_gold',gold); localStorage.setItem('ink_ammo_shooter',ammo.shooter); localStorage.setItem('ink_ammo_roller',ammo.roller); localStorage.setItem('ink_ammo_charger',ammo.charger); }
+
+  let weapon='shooter';
+  function setWeapon(w){ weapon=w; [wShooter,wRoller,wCharger].forEach(x=>x.classList.remove('active')); ({shooter:wShooter,roller:wRoller,charger:wCharger})[w].classList.add('active'); }
+  setWeapon('shooter');
+
+  const hero={x:world.w/2,y:world.h/2,r:18*DPR,spd:330,hp:100,hpMax:100,ang:0,vx:0,vy:0,runT:0};
+  const dummy={x:world.w/2+360,y:world.h/2-80,r:20*DPR,hp:260,hpMax:260};
+  const enemies=[dummy];
+  const bullets=[]; // {x,y,vx,vy,r,damage,life,color,pierce}
+
+  // —— 弹匣机制 ——
+  const magSpec = { shooter:{max:4, reload:1.1}, roller:{max:3, reload:1.3}, charger:{max:3, reload:1.5} };
+  const mag =      { shooter:magSpec.shooter.max, roller:magSpec.roller.max, charger:magSpec.charger.max };
+  const reloadT =  { shooter:0,                  roller:0,                  charger:0                  }; // 秒
+
+  // 普攻/Q 数值
+  const skill={
+    atk:{
+      shooter:{speed:620,damage:10,life:1.1,color:'#9ecbff'},
+      roller: {speed:520,damage:16,life:0.32,color:'#7cf29c'},
+      charger:{speed:980,damage:36,life:1.3,color:'#ffe28a'}
+    },
+    Q:{
+      shooter:{speed:720,damage:14,life:0.9,cd:4,timer:0,color:'#69f0ff'},
+      roller: {dash:260,damage:30,length:120,cd:5,timer:0,color:'#7cf29c'},
+      charger:{speed:1120,damage:72,life:1.1,cd:6,timer:0,color:'#ffd36b',pierce:3}
+    }
+  };
+
+  // ===== 输入 =====
+  const keys=new Set();
+  addEventListener('keydown',e=>{const k=e.key.toLowerCase(); keys.add(k); if(k==='1') setWeapon('shooter'); if(k==='2') setWeapon('roller'); if(k==='3') setWeapon('charger'); if(k==='r') startReload(weapon);});
+  addEventListener('keyup',e=>keys.delete(e.key.toLowerCase()));
+  addEventListener('contextmenu',e=>e.preventDefault());
+
+  // 左下移动摇杆
+  const moveJoy = { active:false, id:null, cx:0, cy:0, x:0, y:0, dir:{x:0,y:0} };
+  (function bindMovePad(){
+    const padMove = document.getElementById('padMove');
+    if(!padMove) return;
+    const stick = padMove.querySelector('.stick');
+    const onDown=(ev)=>{ const id=(ev.changedTouches? ev.changedTouches[0].identifier:'mouse'); const r=padMove.getBoundingClientRect(); moveJoy.active=true; moveJoy.id=id; moveJoy.cx=r.left+r.width/2; moveJoy.cy=r.top+r.height/2; const x=(ev.changedTouches? ev.changedTouches[0].clientX:ev.clientX); const y=(ev.changedTouches? ev.changedTouches[0].clientY:ev.clientY); moveJoy.x=x; moveJoy.y=y; const n=norm(x-moveJoy.cx,y-moveJoy.cy); moveJoy.dir=n; updateStick(); };
+    const onMove=(ev)=>{ if(!moveJoy.active) return; let ex,ey; if(ev.changedTouches){ const t=[...ev.changedTouches].find(tt=>tt.identifier===moveJoy.id); if(!t) return; ex=t.clientX; ey=t.clientY; } else { if(moveJoy.id!=='mouse') return; ex=ev.clientX; ey=ev.clientY; } moveJoy.x=ex; moveJoy.y=ey; const n=norm(ex-moveJoy.cx,ey-moveJoy.cy); moveJoy.dir=n; updateStick(); };
+    const onUp =(ev)=>{ if(!moveJoy.active) return; if(ev.changedTouches){ const t=[...ev.changedTouches].find(tt=>tt.identifier===moveJoy.id); if(!t) return; } moveJoy.active=false; moveJoy.dir={x:0,y:0}; updateStick(); };
+    function updateStick(){ const dx=moveJoy.x-moveJoy.cx, dy=moveJoy.y-moveJoy.cy; const L=Math.min(38,Math.hypot(dx,dy)); const n=norm(dx,dy); stick.style.transform=`translate(calc(-50% + ${n.x*L}px), calc(-50% + ${n.y*L}px))`; }
+    padMove.addEventListener('touchstart',onDown); padMove.addEventListener('touchmove',onMove); padMove.addEventListener('touchend',onUp); padMove.addEventListener('touchcancel',onUp);
+    padMove.addEventListener('mousedown',onDown); window.addEventListener('mousemove',onMove); window.addEventListener('mouseup',onUp);
+  })();
+
+  // 右侧拖拽瞄准（普攻/Q）
+  const padAtk = document.getElementById('padAtk');
+  const padQ   = document.getElementById('padQ');
+  const cdAtk  = document.getElementById('cdAtk');
+  const cdQ    = document.getElementById('cdQ');
+  const dragState={ atk:null, q:null };
+  function bindDrag(pad,type){
+    const stick=pad.querySelector('.stick');
+    const onDown=(ev)=>{ const id=(ev.changedTouches? ev.changedTouches[0].identifier:'mouse'); const rect=pad.getBoundingClientRect(); const cx=rect.left+rect.width/2; const cy=rect.top+rect.height/2; const x=(ev.changedTouches? ev.changedTouches[0].clientX:ev.clientX); const y=(ev.changedTouches? ev.changedTouches[0].clientY:ev.clientY); dragState[type]={id,cx,cy,x,y,dir:{x:1,y:0}}; updateStick(); };
+    const onMove=(ev)=>{ const t=dragState[type]; if(!t) return; let ex,ey; if(ev.changedTouches){ const find=[...ev.changedTouches].find(tt=>tt.identifier===t.id); if(!find) return; ex=find.clientX; ey=find.clientY; } else { if(t.id!=='mouse') return; ex=ev.clientX; ey=ev.clientY; } t.x=ex; t.y=ey; const dx=ex-t.cx, dy=ey-t.cy; const n=norm(dx,dy); t.dir=n; updateStick(); };
+    const onUp=(ev)=>{ const t=dragState[type]; if(!t) return; if(ev.changedTouches){ const find=[...ev.changedTouches].find(tt=>tt.identifier===t.id); if(!find) return; }
+      if(type==='atk') firePrimary(t); else fireSpecial(t);
+      dragState[type]=null; updateStick(); };
+    pad.addEventListener('touchstart',onDown); pad.addEventListener('touchmove',onMove); pad.addEventListener('touchend',onUp); pad.addEventListener('touchcancel',onUp);
+    pad.addEventListener('mousedown',onDown); window.addEventListener('mousemove',onMove); window.addEventListener('mouseup',onUp);
+    function updateStick(){ const t=dragState[type]; if(!t){ stick.style.transform='translate(-50%,-50%)'; return; } const dx=t.x-t.cx, dy=t.y-t.cy; const L=Math.min(38,Math.hypot(dx,dy)); const n=norm(dx,dy); stick.style.transform=`translate(calc(-50% + ${n.x*L}px), calc(-50% + ${n.y*L}px))`; }
+  }
+  bindDrag(padAtk,'atk');
+  bindDrag(padQ,'q');
+
+  // 弹匣/装弹
+  function startReload(w){ if(reloadT[w]>0) return; if(ammo[w]<=0 || mag[w]>=magSpec[w].max) return; reloadT[w]=magSpec[w].reload; showReloadOverlay(reloadT[w]); }
+  function updateReload(dt){ for(const w of ['shooter','roller','charger']){ if(reloadT[w]>0){ reloadT[w]-=dt; if(reloadT[w]<=0){ const need=magSpec[w].max-mag[w]; const take=Math.max(0,Math.min(need,ammo[w])); mag[w]+=take; ammo[w]-=take; save(); hideReloadOverlay(); } } } }
+  function tryConsumeRound(w){ if(reloadT[w]>0){ toast('装弹中…'); return false; } if(mag[w]<=0){ startReload(w); toast('弹匣见底，自动装弹'); return false; } mag[w]--; if(mag[w]<=0) startReload(w); return true; }
+
+  // 战斗
+  function shoot(conf,dx,dy){ const sp=conf.speed,damage=conf.damage,life=conf.life; const r=4*DPR; bullets.push({x:hero.x+dx*hero.r*1.2,y:hero.y+dy*hero.r*1.2,vx:dx*sp,vy:dy*sp,r,damage,life,color:conf.color,pierce:0}); }
+  function shootPierce(conf,dx,dy){ const sp=conf.speed,damage=conf.damage,life=conf.life; const r=6*DPR; bullets.push({x:hero.x+dx*hero.r*1.2,y:hero.y+dy*hero.r*1.2,vx:dx*sp,vy:dy*sp,r,damage,life,color:conf.color,pierce:conf.pierce||2}); }
+  function slashLine(x1,y1,x2,y2,damage){ const hitRadius = 26*DPR; for(const e of enemies){ const A={x:x1,y:y1}, B={x:x2,y:y2}, P={x:e.x,y:e.y}; const ABx=B.x-A.x, ABy=B.y-A.y; const APx=P.x-A.x, APy=P.y-A.y; const ab2=ABx*ABx+ABy*ABy; const t=clamp((APx*ABx+APy*ABy)/(ab2||1),0,1); const Nx=A.x+ABx*t, Ny=A.y+ABy*t; const dx=P.x-Nx, dy=P.y-Ny; if(dx*dx+dy*dy < (e.r+hitRadius)*(e.r+hitRadius)) { applyDamage(e, damage); } } }
+  function applyDamage(e, damage){ const prev=e.hp; e.hp=clamp(e.hp-damage,0,e.hpMax); const dealt=prev-e.hp; gold += Math.floor(dealt/10); save(); }
+
+  function firePrimary(t){ const v=norm(t.dir.x,t.dir.y); if(!tryConsumeRound(weapon)) return; const conf=skill.atk[weapon]; if(weapon==='roller'){ for(let k=0;k<6;k++){ const a=(Math.random()*2-1)*6*Math.PI/180; const ca=Math.cos(a), sa=Math.sin(a); const vx=v.x*ca - v.y*sa, vy=v.x*sa + v.y*ca; shoot({speed:conf.speed,damage:conf.damage,life:conf.life,color:conf.color}, vx,vy); } } else if(weapon==='charger'){ shootPierce({speed:conf.speed,damage:conf.damage,life:conf.life,color:conf.color,pierce:1}, v.x,v.y); } else { shoot(conf, v.x,v.y); } }
+  function fireSpecial(t){ const now=performance.now(); const q=skill.Q[weapon]; if(q.timer>now) return toast('Q 冷却中'); if(!tryConsumeRound(weapon)) return; const v=norm(t.dir.x,t.dir.y); if(weapon==='shooter'){ for(let i=0;i<6;i++){ setTimeout(()=>shoot({speed:q.speed,damage:q.damage,life:q.life,color:q.color}, v.x,v.y), i*40); } } else if(weapon==='roller'){ const lenPx=q.length*DPR; const endX=hero.x+v.x*lenPx, endY=hero.y+v.y*lenPx; slashLine(hero.x,hero.y,endX,endY, q.damage); hero.x=endX; hero.y=endY; } else if(weapon==='charger'){ shootPierce({speed:q.speed,damage:q.damage,life:q.life,color:q.color,pierce:q.pierce}, v.x,v.y); } q.timer=now+q.cd*1000; showCooldown(cdQ,q.cd); }
+
+  // —— 抖动移除 ——
+  function kick(_){}
+
+  // ===== 绘制辅助 =====
+  function drawHPBar(x,y,ratio){ const w=56*DPR, h=8*DPR; ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x-w/2,y-h-4*DPR,w,h); ctx.fillStyle='#4ade80'; ctx.fillRect(x-w/2,y-h-4*DPR,w*clamp(ratio,0,1),h); ctx.strokeStyle='rgba(0,0,0,.15)'; ctx.strokeRect(x-w/2,y-h-4*DPR,w,h); }
+  function roundRect(ctx,x,y,w,h,r){ const rr=Math.min(r,Math.abs(w)/2,Math.abs(h)/2); ctx.beginPath(); ctx.moveTo(x+rr,y); ctx.lineTo(x+w-rr,y); ctx.quadraticCurveTo(x+w,y,x+w,y+rr); ctx.lineTo(x+w,y+h-rr); ctx.quadraticCurveTo(x+w,y+h,x+w-rr,y+h); ctx.lineTo(x+rr,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-rr); ctx.lineTo(x,y+rr); ctx.quadraticCurveTo(x,y,x+rr,y); }
+  function drawHero(ctx){ ctx.save(); ctx.translate(hero.x,hero.y); ctx.rotate(hero.ang); const base=hero.r; ctx.globalAlpha=0.35; ctx.beginPath(); ctx.ellipse(0, base*0.7, base*1.2, base*0.45, 0, 0, Math.PI*2); ctx.fillStyle='black'; ctx.fill(); ctx.globalAlpha=1; const sway=Math.sin(hero.runT)*6*DPR; ctx.beginPath(); ctx.moveTo(-base*0.3, -base*0.6); ctx.quadraticCurveTo(-base*1.4, -base*0.2+sway, -base*1.2, base*0.9); ctx.quadraticCurveTo(-base*0.4, base*0.4, -base*0.3, base*0.2); ctx.closePath(); ctx.fillStyle='#0e2a48'; ctx.fill(); roundRect(ctx, -base*0.2, -base*0.7, base*0.9, base*1.4, base*0.4); ctx.fillStyle='#eaf4ff'; ctx.fill(); ctx.lineWidth=2*DPR; ctx.strokeStyle='#60a5fa'; ctx.stroke(); ctx.beginPath(); ctx.arc(base*0.5, -base*0.6, base*0.45, 0, Math.PI*2); ctx.fillStyle='#eaf4ff'; ctx.fill(); ctx.lineWidth=2*DPR; ctx.strokeStyle='#86c5ff'; ctx.stroke(); ctx.beginPath(); ctx.ellipse(base*0.62, -base*0.55, base*0.36, base*0.18, 0, 0, Math.PI*2); ctx.fillStyle='rgba(96,165,250,.85)'; ctx.fill(); ctx.beginPath(); ctx.lineWidth=6*DPR; ctx.strokeStyle='#dbeafe'; ctx.lineCap='round'; ctx.moveTo(-base*0.05, -base*0.2); ctx.lineTo(base*0.4, 0); ctx.moveTo(-base*0.1,  base*0.2); ctx.lineTo(base*0.2, base*0.3); ctx.stroke(); ctx.save(); ctx.translate(base*0.6, 0); roundRect(ctx, 0, -base*0.18, base*0.9, base*0.36, base*0.18, base*0.18); ctx.fillStyle='#1b2b44'; ctx.fill(); ctx.strokeStyle='#94c5ff'; ctx.stroke(); ctx.beginPath(); ctx.ellipse(base*0.95, 0, base*0.12, base*0.12, 0, 0, Math.PI*2); ctx.fillStyle='#9ecbff'; ctx.fill(); ctx.restore(); ctx.restore(); drawHPBar(hero.x, hero.y - hero.r*1.4, hero.hp/hero.hpMax); }
+
+  // ===== 更新 =====
+  function update(dt){
+    // 竖屏提示
+    rotateTip.style.display = (window.matchMedia('(orientation: portrait)').matches? 'flex':'none');
+    goldEl.textContent = gold;
+
+    // 移动
+    let vx=0,vy=0; if(keys.has('w')||keys.has('arrowup')) vy-=1; if(keys.has('s')||keys.has('arrowdown')) vy+=1; if(keys.has('a')||keys.has('arrowleft')) vx-=1; if(keys.has('d')||keys.has('arrowright')) vx+=1; if(moveJoy.active){ vx+=moveJoy.dir.x; vy+=moveJoy.dir.y; }
+    const L=len(vx,vy); if(L>0){ const n=norm(vx,vy); hero.x+=n.x*hero.spd*dt; hero.y+=n.y*hero.spd*dt; hero.vx=n.x*hero.spd; hero.vy=n.y*hero.spd; hero.runT += dt*8; } else { hero.vx*=0.85; hero.vy*=0.85; }
+    hero.x=clamp(hero.x,0,world.w); hero.y=clamp(hero.y,0,world.h);
+
+    // 面朝拖拽方向
+    const activeDir = (dragState.atk && dragState.atk.dir) || (dragState.q && dragState.q.dir);
+    if(activeDir){ hero.ang=Math.atan2(activeDir.y, activeDir.x); }
+
+    // 子弹
+    for(const b of bullets){ b.x+=b.vx*dt; b.y+=b.vy*dt; b.life-=dt; }
+    for(let i=bullets.length-1;i>=0;i--){ const b=bullets[i]; if(b.life<=0){ bullets.splice(i,1); continue; }
+      for(const e of enemies){ const dx=e.x-b.x,dy=e.y-b.y; if(dx*dx+dy*dy<(e.r+(b.r||5))*(e.r+(b.r||5))){ applyDamage(e, b.damage||0); if(b.pierce>0){ b.pierce--; } else { bullets.splice(i,1); } break; } }
+    }
+
+    // 相机
+    camera.x=clamp(hero.x-W/2,0,Math.max(0,world.w-W));
+    camera.y=clamp(hero.y-H/2,0,Math.max(0,world.h-H));
+
+    // 假人回血
+    dummy.hp = clamp(dummy.hp + dt*4, 0, dummy.hpMax);
+
+    // 装弹计时
+    updateReload(dt);
+  }
+
+  // ===== 绘制 =====
+  function draw(){
+    ctx.save();
+    const {x:cx,y:cy} = camera;
+    // 明亮清晰背景
+    const g=ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'#eef6ff');
+    g.addColorStop(1,'#ffffff');
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+    ctx.translate(-cx,-cy);
+    // 细网格（浅色）
+    ctx.strokeStyle='#dfe7f3'; ctx.lineWidth=1*DPR; ctx.beginPath();
+    for(let x=0;x<=world.w;x+=100){ ctx.moveTo(x,0); ctx.lineTo(x,world.h);} for(let y=0;y<=world.h;y+=100){ ctx.moveTo(0,y); ctx.lineTo(world.w,y);} ctx.stroke();
+    // 假人
+    ctx.save(); ctx.translate(dummy.x,dummy.y); ctx.fillStyle='#2e1b1b'; ctx.beginPath(); ctx.arc(0,0,dummy.r,0,Math.PI*2); ctx.fill(); ctx.restore();
+    drawHPBar(dummy.x, dummy.y - dummy.r*1.3, dummy.hp/dummy.hpMax);
+    // 英雄
+    drawHero(ctx);
+    // 子弹
+    for(const b of bullets){ ctx.beginPath(); ctx.arc(b.x,b.y,b.r||5,0,Math.PI*2); ctx.fillStyle=b.color||'#9ecbff'; ctx.fill(); }
+    // 瞄准辅助线
+    const showLine = dragState.atk || dragState.q; if(showLine){ const d=(dragState.atk||dragState.q).dir; ctx.strokeStyle='rgba(0,0,0,.25)'; ctx.lineWidth=2*DPR; ctx.beginPath(); ctx.moveTo(hero.x,hero.y); ctx.lineTo(hero.x + d.x*200, hero.y + d.y*200); ctx.stroke(); }
+    ctx.restore();
+  }
+
+  // —— 叠层：冷却 / 装弹 ——
+  function showCooldown(el,sec){ el.style.display='grid'; const t0=performance.now(); const tick=()=>{ const dt=(performance.now()-t0)/1000; const left=Math.max(0,sec-dt); el.textContent=left.toFixed(1)+'s'; if(left>0) requestAnimationFrame(tick); else { el.style.display='none'; el.textContent=''; } }; tick(); }
+  function showReloadOverlay(sec){ cdAtk.style.display='grid'; const t0=performance.now(); const tick=()=>{ const left = sec - (performance.now()-t0)/1000; if(left>0){ cdAtk.textContent='装弹 '+left.toFixed(1)+'s'; requestAnimationFrame(tick); } else { cdAtk.style.display='none'; cdAtk.textContent=''; } }; tick(); }
+  function hideReloadOverlay(){ cdAtk.style.display='none'; cdAtk.textContent=''; }
+
+  // 商店
+  btnShop.onclick=()=>{ goldEl.textContent=gold; shopEl.style.display='flex'; };
+  closeShop.onclick=()=>{ shopEl.style.display='none'; };
+  shopEl.addEventListener('click',e=>{ if(e.target.dataset.buy){ const [kind,amt,price]=e.target.dataset.buy.split(','); const p=Number(price), a=Number(amt); if(gold<p) return toast('金币不足'); gold-=p; ammo[kind]+=a; save(); goldEl.textContent=gold; toast(`购买 ${kind} +${a}`); }});
+  shopEl.addEventListener('click',e=>{ if(e.target===shopEl) shopEl.style.display='none'; });
+
+  // 主循环
+  let last=performance.now(), fpsS=0, fpsN=0; function loop(ts){ const dt=Math.min(0.033,(ts-last)/1000); last=ts; update(dt); draw(); fpsS+=dt; fpsN++; if(fpsS>=0.5){ hudR.textContent='FPS '+((fpsN/fpsS)|0); fpsS=0; fpsN=0; } requestAnimationFrame(loop); }
+
+  // 启动
+  resize(); requestAnimationFrame(loop);
+  wShooter.onclick=()=>setWeapon('shooter'); wRoller.onclick=()=>setWeapon('roller'); wCharger.onclick=()=>setWeapon('charger');
+})();
+</script>
+</body>
+</html>
